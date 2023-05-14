@@ -1,0 +1,212 @@
+function [allData, scenario, sensor] = Scenario2_CurvedBarriers()
+
+[scenario, egoVehicle] = createDrivingScenario;
+sensor = createSensor(scenario);
+
+allData = struct('Time', {}, 'ActorPoses', {}, 'ObjectDetections', {});
+running = true;
+
+%%% ---- Need these variables for code to work ---- %%%
+pauseSim = true;
+pauseTime = 0.05;
+
+xLimits = [-10 50];
+yLimits = [-40 15];
+
+positions = [0 0];
+velocities = [0 0];
+%%% ----------------------------------------------- %%%
+
+%%% -------- Plot Creation Function -------- %%%
+[olPlotter, radarDetPlotter] = createPlot(xLimits, yLimits, sensor);
+
+while running
+
+    % Generate the target poses of all actors relative to the ego vehicle
+    poses = targetPoses(egoVehicle);
+    time  = scenario.SimulationTime;
+
+    % Generate detections for the sensor
+    [objectDetections, isValidTime] = sensor(poses, time);
+    numObjects = length(objectDetections);
+    objectDetections = objectDetections(1:numObjects);
+
+    % Aggregate all detections into a structure for later use
+    if isValidTime
+        allData(end + 1) = struct( ...
+            'Time',       scenario.SimulationTime, ...
+            'ActorPoses', actorPoses(scenario), ...
+            'ObjectDetections', {objectDetections});
+    end
+
+    % Advance the scenario one time step and exit the loop if the scenario is complete
+    running = advance(scenario);
+
+    [realRadarObjects, positions, velocities] = removeRadarClutter(numObjects, objectDetections, positions, velocities);
+
+    %%% -------- Plot Objects Function -------- %%%
+    plotObjects(egoVehicle, olPlotter, radarDetPlotter, positions, velocities);
+    
+    %%% -------- Used to Slow Sim Time -------- %%%
+    if (pauseSim)
+        pause(pauseTime)
+    end
+
+end
+
+% Restart the driving scenario to return the actors to their initial positions.
+restart(scenario);
+
+% Release the sensor object so it can be used again.
+release(sensor);
+
+%% Helper Functions
+
+function [olPlotter, radarDetPlotter] = createPlot(x_lim, y_lim, sensor)
+    % Create plot
+    bep = birdsEyePlot('XLim',x_lim,'YLim',y_lim);
+    olPlotter = outlinePlotter(bep);
+    % Create radar coverage outline
+    caPlotter = coverageAreaPlotter(bep,'DisplayName','Coverage area','FaceColor','blue');
+    % Combine all radar detections into one entry and store it for later update
+    radarDetPlotter = detectionPlotter(bep, 'DisplayName','radar detection', ...
+        'MarkerEdgeColor','red');
+    plotCoverageArea(caPlotter,sensor.MountingLocation(1:2),sensor.RangeLimits(2),sensor.MountingAngles(1),sensor.FieldOfView(1));
+
+
+function plotObjects(egoVehicle, olPlotter, radarDetPlotter, positions, velocities)
+    [position,yaw,long,width,originOffset,color] = targetOutlines(egoVehicle);
+    plotOutline(olPlotter,position,yaw,long,width, ...
+        'OriginOffset',originOffset,'Color',color);
+    plotDetection(radarDetPlotter,positions,velocities);
+
+
+function [realRadarObjects, positions, velocities] = removeRadarClutter(numObjects, objectDetections, positions, velocities)
+    
+    mph = 25;
+    ms = mph/2.237;
+    LaneWidth = 3.6;
+    ZoneWidth = LaneWidth*1.7;
+    inLane = zeros(numObjects, 1);
+    inZone = zeros(numObjects, 1);
+    normV = zeros(numObjects, 1);
+    
+    for i = 1:numObjects
+
+        normV(i) = hypot(objectDetections{i,1}.Measurement(4), objectDetections{i,1}.Measurement(5));
+
+        inLane(i) = (abs(objectDetections{i,1}.Measurement(2)) <= LaneWidth/2);
+        inZone(i) = (abs(objectDetections{i,1}.Measurement(2)) <= max(abs(objectDetections{i,1}.Measurement(5))*2, ZoneWidth));
+        %inSpeed(i) = (abs(normV(i)) <= ms);
+    end
+
+    realRadarObjectsIndex = union(intersect(find(normV < ms)));
+    realRadarObjects = objectDetections(realRadarObjectsIndex);
+
+    for i = 1:size(realRadarObjects,1)
+        position_x = realRadarObjects{i,1}.Measurement(1);
+        position_y = realRadarObjects{i,1}.Measurement(2);
+        positions(i,1) = position_x;
+        positions(i,2) = position_y;
+        velocitiy_x = realRadarObjects{i,1}.Measurement(4);
+        velocitiy_y = realRadarObjects{i,1}.Measurement(5);
+        velocities(i,1) = velocitiy_x;
+        velocities(i,2) = velocitiy_y;
+    end
+
+
+
+
+
+
+function sensor = createSensor(scenario)
+% createSensors Returns all sensor objects to generate detections
+
+% Assign into each sensor the physical and radar profiles for all actors
+profiles = actorProfiles(scenario);
+sensor = drivingRadarDataGenerator('SensorIndex', 1, ...
+    'MountingLocation', [3.7 0 0.2], ...
+    'RangeLimits', [0 100], ...
+    'TargetReportFormat', 'Detections', ...
+    'FieldOfView', [60 5], ...
+    'Profiles', profiles);
+
+function [scenario, egoVehicle] = createDrivingScenario
+% createDrivingScenario Returns the drivingScenario defined in the Designer
+
+% Construct a drivingScenario object.
+scenario = drivingScenario;
+
+% Add all road segments
+roadCenters = [0 20 0;
+    30 10 0;
+    40 -20 0];
+headings = [0;NaN;-90];
+marking = [laneMarking('Solid', 'Color', [0.98 0.86 0.36])
+    laneMarking('DoubleSolid', 'Color', [0.98 0.86 0.36])
+    laneMarking('Solid')];
+laneSpecification = lanespec(2, 'Marking', marking);
+road1 = road(scenario, roadCenters, 'Heading', headings, 'Lanes', laneSpecification, 'Name', 'Road');
+
+% Add the barriers
+barrier(scenario, road1, 'RoadEdge', 'right', ...
+    'ClassID', 6, ...
+    'Width', 0.433, ...
+    'Mesh', driving.scenario.guardrailMesh, 'PlotColor', [0.55 0.55 0.55], 'Name', 'Guardrail');
+
+barrier(scenario, road1, 'RoadEdge', 'left', ...
+    'ClassID', 5, ...
+    'Width', 0.61, ...
+    'Height', 0.81, ...
+    'Mesh', driving.scenario.jerseyBarrierMesh, 'PlotColor', [0.65 0.65 0.65], 'Name', 'Jersey Barrier');
+
+% Add the ego vehicle
+egoVehicle = vehicle(scenario, ...
+    'ClassID', 1, ...
+    'Position', [1.4 18.5 0], ...
+    'Mesh', driving.scenario.carMesh, ...
+    'Name', 'Car');
+waypoints = [1.4 18.5 0;
+    10.06 17.81 0.01;
+    17.64 15.89 0.01;
+    26.5 11.07 0.01;
+    33.37 3.56 0.01;
+    36.98 -5.72 0.01;
+    38.33 -14.65 0.01];
+speed = [0;30;30;30;30;30;30];
+waittime = [0.1;0;0;0;0;0;0];
+trajectory(egoVehicle, waypoints, speed, waittime);
+
+% Add the non-ego actors
+car1 = vehicle(scenario, ...
+    'ClassID', 1, ...
+    'Position', [7.72 18.08 0.01], ...
+    'Mesh', driving.scenario.carMesh, ...
+    'Name', 'Car1');
+waypoints = [7.72 18.08 0.01;
+    16.72 16.32 0.01;
+    24.8 12.49 0.01;
+    32.59 5.19 0.01;
+    36.35 -3.53 0.01;
+    37.9 -9.98 0.01;
+    38.47 -17.91 0.01];
+speed = [30;30;30;30;30;30;30];
+trajectory(car1, waypoints, speed);
+
+car2 = vehicle(scenario, ...
+    'ClassID', 1, ...
+    'Position', [41.32 -18.76 0.01], ...
+    'Mesh', driving.scenario.carMesh, ...
+    'Name', 'Car2');
+waypoints = [41.32 -18.76 0.01;
+    40.53 -8.42 0.01;
+    38.4 -0.27 0.01;
+    34.29 7.31 0.01;
+    30.18 12.05 0.01;
+    23.16 16.94 0.01;
+    15.37 19.64 0.01;
+    6.02 21.05 0.01;
+    1.02 21.39 0.01];
+speed = [30;30;30;30;30;30;30;30;30];
+trajectory(car2, waypoints, speed);
+

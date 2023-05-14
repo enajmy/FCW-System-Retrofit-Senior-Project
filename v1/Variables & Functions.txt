@@ -1,0 +1,61 @@
+%% Create Variables & Plot -- place before 'while running' loop
+	%%% ---- Need these variables for code to work ---- %%%
+	pauseSim = true;
+	pauseTime = 0.1;
+
+	xLimits = [-10 30];
+	yLimits = [-15 15];
+
+	positions = [0 0];
+	velocities = [0 0];
+	%%% ----------------------------------------------- %%%
+
+	%%% -------- Plot Creation Function -------- %%%
+	[olPlotter, radarDetPlotter] = createPlot(xLimits, yLimits, sensor);
+
+
+
+
+
+%% Plotting Objects & Pausing -- place in 'while running' loop before 'end'
+	%%% -------- Plot Objects Function -------- %%%
+    [positions, velocities] = plotObjects(numObjects, objectDetections, egoVehicle, olPlotter, radarDetPlotter, positions, velocities);
+    
+    %%% -------- Used to Slow Sim Time -------- %%%
+    if (pauseSim)
+        pause(pauseTime)
+    end
+
+
+
+
+
+%% Helper Functions -- place at end of code with other helper functions
+function [olPlotter, radarDetPlotter] = createPlot(x_lim, y_lim, sensor)
+    % Create plot
+    bep = birdsEyePlot('XLim',x_lim,'YLim',y_lim);
+    olPlotter = outlinePlotter(bep);
+    % Create radar coverage outline
+    caPlotter = coverageAreaPlotter(bep,'DisplayName','Coverage area','FaceColor','blue');
+    % Combine all radar detections into one entry and store it for later update
+    radarDetPlotter = detectionPlotter(bep, 'DisplayName','radar detection', ...
+        'MarkerEdgeColor','red');
+    plotCoverageArea(caPlotter,sensor.MountingLocation(1:2),sensor.RangeLimits(2),sensor.MountingAngles(1),sensor.FieldOfView(1));
+
+
+function [positions, velocities] = plotObjects(numObjects, objectDetections, egoVehicle, olPlotter, radarDetPlotter, positions, velocities)
+    [position,yaw,long,width,originOffset,color] = targetOutlines(egoVehicle);
+    plotOutline(olPlotter,position,yaw,long,width, ...
+        'OriginOffset',originOffset,'Color',color);
+
+    for i = 1:numObjects
+        position_x = objectDetections{i,1}.Measurement(1);
+        position_y = objectDetections{i,1}.Measurement(2);
+        positions(i,1) = position_x;
+        positions(i,2) = position_y;
+        velocitiy_x = objectDetections{i,1}.Measurement(4);
+        velocitiy_y = objectDetections{i,1}.Measurement(5);
+        velocities(i,1) = velocitiy_x;
+        velocities(i,2) = velocitiy_y;
+    end
+    plotDetection(radarDetPlotter,positions,velocities);
