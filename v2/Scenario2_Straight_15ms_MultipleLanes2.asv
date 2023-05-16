@@ -11,6 +11,7 @@ clusterer = clusterDBSCAN('EpsilonSource','Property','Epsilon',4,'MinNumPoints',
 
 % Create a new figure
 figure(1);
+
 hold on;
 
 for i = 1:time
@@ -21,14 +22,10 @@ for i = 1:time
 
     clustererPlot = clusterer(objectData(:, 1:2));
 
-    % Clear axes 
-    cla;
-
     % Plot data points with clusterDBSCAN plot function
-    ax = axes;  % Create axes for the figure
-    xlim(ax, [-5 5]);  % Set x-axis limits
-    ylim(ax, [0 20]);  % Set y-axis limits
     plot(clusterer,objectData(:, 1:2),clustererPlot,'Title','Cluster Plot');
+    xlim([-10 10]);  % Set x-axis limits
+    ylim([0 50]);  % Set y-axis limits
 
     % Get the unique cluster labels
     clusterLabels = unique(clustererPlot);
@@ -51,6 +48,9 @@ for i = 1:time
     if (pauseSim)
         pause(pauseTime)
     end
+
+    % Clear axes 
+    cla;
 end
 
 hold off;
@@ -225,6 +225,7 @@ sensor = drivingRadarDataGenerator('SensorIndex', 1, ...
     'FieldOfView', [120 5], ...
     'Profiles', profiles);
 end
+
 function [scenario, egoVehicle] = createDrivingScenario
 % createDrivingScenario Returns the drivingScenario defined in the Designer
 

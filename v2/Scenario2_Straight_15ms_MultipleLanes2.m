@@ -11,6 +11,7 @@ clusterer = clusterDBSCAN('EpsilonSource','Property','Epsilon',4,'MinNumPoints',
 
 % Create a new figure
 figure(1);
+
 hold on;
 
 for i = 1:time
@@ -224,6 +225,7 @@ sensor = drivingRadarDataGenerator('SensorIndex', 1, ...
     'FieldOfView', [120 5], ...
     'Profiles', profiles);
 end
+
 function [scenario, egoVehicle] = createDrivingScenario
 % createDrivingScenario Returns the drivingScenario defined in the Designer
 
