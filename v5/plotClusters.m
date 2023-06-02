@@ -1,12 +1,22 @@
 close all;
-load('curvedBarriers.mat');
+load('IIHS_12MPH_workspace_data.mat');
 
 numObjects = length(simulationData);
 allObjectData = cell(numObjects,1);
 allClusterData = cell(numObjects,1);
 
-scenarioFigure = figure;
-scenarioAxes = axes;
+figure;
+subplot(1,2,1);
+axis equal;
+hold on;
+theta = linspace(0, 2*pi, 100);
+x = cos(theta);
+y = sin(theta);
+h = fill(x, y, 'g');
+hold off;
+
+subplot(1,2,2);
+scenarioAxes = gca;
 hold on
 axis manual
 axis([-30 30 -10 80]);
@@ -18,20 +28,24 @@ for i = 1:numObjects
 end
 
 %% Create clusteringDBSCAN plot
-clusterer = clusterDBSCAN('EpsilonSource','Auto','MinNumPoints',2,'MaxNumPoints',5,'EpsilonHistoryLength',1,'EnableDisambiguation',false);
-clusterHandle = clusterer(allClusterData{1},true);
-plot(clusterer,allClusterData{1},clusterHandle,'Parent',scenarioAxes);
+clustererHandle = clusterDBSCAN('EpsilonSource','Property','Epsilon',4,'MinNumPoints',3,'EnableDisambiguation',false);
+clusterIndex = clustererHandle(allClusterData{1});
+plot(clustererHandle,allClusterData{1},clusterIndex,'Parent',scenarioAxes);
 axis([-30 30 -10 80]);
 hold on;
 
+pause(1);
+
 %% Advance clustering plot
+
+threatColor = 'green';
 for i = 1:numObjects
-    clusterHandle = clusterer(allClusterData{i},true);
-    plot(clusterer,allClusterData{i},clusterHandle,'Parent',scenarioAxes);
-    axis([-30 30 -10 80]);
+    clusterIndex = clustererHandle(allClusterData{i});
+    plot(clustererHandle,allClusterData{i},clusterIndex,'Parent',scenarioAxes);
+    axis([-30 30 0 80]);
 
     % For each cluster
-    clusterLabels = unique(clusterHandle);
+    clusterLabels = unique(clusterIndex);
 
     % Remove previous rectangles
     oldRectangles = findobj('Parent',scenarioAxes,'Type', 'rectangle');
@@ -39,7 +53,7 @@ for i = 1:numObjects
 
     for j = 1:length(clusterLabels)
         % Get the data points for the current cluster
-        currentClusterData = allClusterData{i}(clusterHandle == clusterLabels(j), :);
+        currentClusterData = allClusterData{i}(clusterIndex == clusterLabels(j), :);
 
         % Calculate the minimum and maximum x and y coordinates
         minX = min(currentClusterData(:,1));
@@ -50,10 +64,27 @@ for i = 1:numObjects
         % Draw a rectangle around the current cluster in the overlaying axes
         rectangle('Parent', scenarioAxes, 'Position',[minX minY maxX-minX maxY-minY],'EdgeColor','r');
 
+        if (clusterLabels(j) == 1)
+            threatColor = 'green';
+            avgXPos = (maxX-minX)/2;
+            if (avgXPos > -3 && avgXPos < 3)
+                relSpeed = mean(allObjectData{i}(clusterIndex == 1, 3));
+                if (relSpeed < -0.02)
+                    %yellow
+                    threatColor = 'yellow';
+                    d = abs(relSpeed) * 1.2 + (relSpeed*relSpeed) / (2*0.4*9.8);
+                    if (minY < d)
+                        %warn
+                        
+                        threatColor = 'red';
+                    end
+                end
+            end
+        end
+        set(h, 'FaceColor', threatColor);
         pause(0.05);
     end
 end
-
 %% Get other functions
 function [objectData] = getObjectData(objectDetections)
     % Get number of objects detected for array length

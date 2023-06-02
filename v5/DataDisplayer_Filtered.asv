@@ -1,0 +1,386 @@
+close all;
+load('ADV_freeway_barrier_workspace_data.mat');
+
+egoVehicle = scenarioData.Actors(1);
+numObjects = length(simulationData);
+allObjectData = cell(numObjects,1);
+allClusterData = cell(numObjects,1);
+allTrackedClustersPos = cell(numObjects,1);
+allTrackedClustersVel = cell(numObjects,1);
+allTrackedClusterPosToPlot = cell(numObjects,1);
+allTrackedClusterVelToPlot = cell(numObjects,1);
+
+% Initialize FCW alert plot
+figure;
+subplot(2,2,4);
+axis equal;
+hold on;
+theta = linspace(0, 2*pi, 100);
+x = cos(theta);
+y = sin(theta);
+h = fill(x, y, 'g');
+hold off;
+
+% Initialize birds eye plot
+subplot(2,2,[1,3])
+bepAx = gca;
+legend('boxoff')
+hold on;
+plotterDataStruct = createBirdsEye(sensorData, [-40 40 -20 20], bepAx);
+hold off;
+
+% Initialize cluster plot
+subplot(2,2,2);
+scenarioAxes = gca;
+hold on
+axis manual
+axis([-10 10 -10 40]);
+
+% Initialize the tracker
+[tracker, positionSelector, velocitySelector] = setupTracker();
+%% Convert objectDetections to usable data
+for i = 1:numObjects
+    allObjectData{i} = getObjectData(simulationData(i).ObjectDetections);
+    allClusterData{i} = [-allObjectData{i}(:,2), allObjectData{i}(:,1)];
+
+    detections = {};
+    detections = processRadar(detections, simulationData(i).ObjectDetections, simulationData(i).ObjectDetections{1,1}.Time);
+
+    confirmedTracks = updateTracks(tracker, detections, detections{1,1}.Time);
+    positions = getTrackPositions(confirmedTracks, positionSelector);
+    velocities = getTrackVelocities(confirmedTracks, velocitySelector);
+
+    allTrackedClusterPosToPlot{i} = positions;
+    allTrackedClusterVelToPlot{i} = velocities;
+
+    allTrackedClustersPos{i} = horzcat(-positions(:,2),positions(:,1));
+    allTrackedClustersVel{i} = horzcat(velocities(:,2),velocities(:,1));
+end
+allTrackedClustersPos{1} = allClusterData{1};
+allTrackedClustersVel{1} = allObjectData{1}(:,3:4);
+%% Create clusteringDBSCAN plot
+clustererHandle = clusterDBSCAN('EpsilonSource','Auto','MinNumPoints',2,'MaxNumPoints',2,'EpsilonHistoryLength',1,'EnableDisambiguation',false);
+clusterIndex = clustererHandle(allTrackedClustersPos{1},true);
+plot(clustererHandle,allTrackedClustersPos{1},clusterIndex,'Parent',scenarioAxes);
+axis([-5 5 -2 25]);
+hold on;
+
+pause(1);
+
+%% Advance clustering plot
+threatColor = 'green';
+for i = 1:numObjects
+
+    plotDetection(plotterDataStruct.radarDetPlotter,allTrackedClustersPos{i},allTrackedClustersVel{i});
+
+    for k = 1:10
+    % Plot the vehicles
+    [position,yaw,long,width,originOffset,color] = targetOutlines(egoVehicle);
+    plotOutline(plotterDataStruct.olPlotter,position,yaw,long,width,'OriginOffset',originOffset,'Color',color);
+
+    % Plot the lane boundaries/lines
+    [lmv,lmf] = laneMarkingVertices(egoVehicle);
+    plotLaneMarking(plotterDataStruct.lmPlotter,lmv,lmf)
+    rbEgoVehicle = roadBoundaries(egoVehicle);
+    plotLaneBoundary(plotterDataStruct.lbPlotter,rbEgoVehicle)
+
+    advance(scenarioData);
+    end
+
+    clusterIndex = clustererHandle(allTrackedClustersPos{i},true);
+    plot(clustererHandle,allTrackedClustersPos{i},clusterIndex,'Parent',scenarioAxes);
+    axis([-5 5 -2 25]);
+
+    % For each cluster
+    clusterLabels = unique(clusterIndex);
+
+    % Remove previous rectangles
+    oldRectangles = findobj('Parent',scenarioAxes,'Type', 'rectangle');
+    delete(oldRectangles);
+
+    clusterPos = zeros(length(clusterLabels),2);
+
+    for j = 1:length(clusterLabels)
+
+        % Get the data points for the current cluster
+        currentClusterData = allTrackedClustersPos{i}(clusterIndex == clusterLabels(j), :);
+
+        % Calculate the minimum and maximum x and y coordinates
+        minX = min(currentClusterData(:,1));
+        maxX = max(currentClusterData(:,1));
+        minY = min(currentClusterData(:,2));
+        maxY = max(currentClusterData(:,2));
+
+        clusterPos(j,1) = mean(currentClusterData(:,1));
+        clusterPos(j,2) = mean(currentClusterData(:,2));
+
+        if (j ~= 1)
+        % Draw a rectangle around the current cluster in the overlaying axes
+        rectangle('Parent', scenarioAxes, 'Position',[minX minY maxX-minX maxY-minY],'EdgeColor','r');
+        end
+    end
+
+    [minVal, idx] = min(abs(clusterPos(2:end,1)));
+
+    % if (clusterLabels(1) == -1)
+    %     idx = idx + 1;
+    % end
+
+    threatColor = 'green';
+    if (minVal > -2 && minVal < 2)
+        relSpeed = mean(allObjectData{i}(clusterIndex == idx, 3));
+        if (relSpeed < -0.02)
+            %yellow
+            threatColor = 'yellow';
+            d = abs(relSpeed) * 1.2 + (relSpeed*relSpeed) / (2*0.4*9.8);
+            if (minY < d)
+                %warn
+
+                threatColor = 'red';
+            end
+        end
+    end
+    set(h, 'FaceColor', threatColor);
+end
+%% Get other functions
+function [objectData] = getObjectData(objectDetections)
+    % Get number of objects detected for array length
+    numDetections = length(objectDetections);
+
+    % Initialize an array of zeros to hold x,y,vx,vy
+    objectData = zeros(numDetections,4);
+
+    % Grab values and store in objectData
+    % objectData is formated where (i, 1) = x,
+    % (i, 2) = y, (i, 3) = vx, and (i, 4) = vy
+    for j = 1:numDetections
+        objectData(j, :) = [objectDetections{j,1}.Measurement(1);
+            objectDetections{j,1}.Measurement(2);
+            objectDetections{j,1}.Measurement(4);
+            objectDetections{j,1}.Measurement(5)];
+    end
+end
+%% Function Used to Create a Birds Eye Plot
+function [plotterDataStruct] = createBirdsEye(sensor, bepLimits, axes)
+
+%Create birds eye plot
+bep = birdsEyePlot('XLim',bepLimits(1:2),'YLim',bepLimits(3:4),'Parent',axes);
+
+%Create coverage area plotter
+caPlotter = coverageAreaPlotter(bep,'FaceColor','b');
+plotCoverageArea(caPlotter,sensor.MountingLocation(1:2),sensor.RangeLimits(2),sensor.MountingAngles(1),sensor.FieldOfView(1));
+
+%Create radar detections plotter
+radarDetPlotter = detectionPlotter(bep,'MarkerEdgeColor','red');
+
+%Create road boundaries plotter
+lbPlotter = laneBoundaryPlotter(bep);
+lmPlotter = laneMarkingPlotter(bep);
+
+%Create vehicle plotter
+olPlotter = outlinePlotter(bep);
+
+plotterDataStruct = struct('BEP', bep, ...
+    'caPlotter', caPlotter, ...
+    'lbPlotter', lbPlotter, ...
+    'lmPlotter', lmPlotter, ...
+    'olPlotter', olPlotter, ...
+    'radarDetPlotter', radarDetPlotter);
+end
+%% Function to setup tracker
+ function [tracker, positionSelector, velocitySelector] = setupTracker()
+        tracker = multiObjectTracker(...
+            'FilterInitializationFcn', @initConstantAccelerationFilter, ...
+            'AssignmentThreshold', 35, 'ConfirmationThreshold', [2 3], ...
+            'DeletionThreshold', 5);
+
+        % The State vector is:
+        %   In constant velocity:     State = [x;vx;y;vy]
+        %   In constant acceleration: State = [x;vx;ax;y;vy;ay]
+
+        % Define which part of the State is the position. For example:
+        %   In constant velocity:     [x;y] = [1 0 0 0; 0 0 1 0] * State
+        %   In constant acceleration: [x;y] = [1 0 0 0 0 0; 0 0 0 1 0 0] * State
+        positionSelector = [1 0 0 0 0 0; 0 0 0 1 0 0];
+
+        % Define which part of the State is the velocity. For example:
+        %   In constant velocity:     [x;y] = [0 1 0 0; 0 0 0 1] * State
+        %   In constant acceleration: [x;y] = [0 1 0 0 0 0; 0 0 0 0 1 0] * State
+        velocitySelector = [0 1 0 0 0 0; 0 0 0 0 1 0];
+ end
+ %% Function for kalman filter
+ function filter = initConstantAccelerationFilter(detection)
+% This function shows how to configure a constant acceleration filter. The
+% input is an objectDetection and the output is a tracking filter.
+% For clarity, this function shows how to configure a trackingKF,
+% trackingEKF, or trackingUKF for constant acceleration.
+%
+% Steps for creating a filter:
+%   1. Define the motion model and state
+%   2. Define the process noise
+%   3. Define the measurement model
+%   4. Initialize the state vector based on the measurement
+%   5. Initialize the state covariance based on the measurement noise
+%   6. Create the correct filter
+
+    % Step 1: Define the motion model and state
+    % This example uses a constant acceleration model, so:
+    STF = @constacc;     % State-transition function, for EKF and UKF
+    STFJ = @constaccjac; % State-transition function Jacobian, only for EKF
+    % The motion model implies that the state is [x;vx;ax;y;vy;ay]
+    % You can also use constvel and constveljac to set up a constant
+    % velocity model, constturn and constturnjac to set up a constant turn
+    % rate model, or write your own models.
+
+    % Step 2: Define the process noise
+    dt = 0.05; % Known timestep size
+    sigma = 1; % Magnitude of the unknown acceleration change rate
+    % The process noise along one dimension
+    Q1d = [dt^4/4, dt^3/2, dt^2/2; dt^3/2, dt^2, dt; dt^2/2, dt, 1] * sigma^2;
+    Q = blkdiag(Q1d, Q1d); % 2-D process noise
+
+    % Step 3: Define the measurement model
+    MF = @fcwmeas;       % Measurement function, for EKF and UKF
+    MJF = @fcwmeasjac;   % Measurement Jacobian function, only for EKF
+
+    % Step 4: Initialize a state vector based on the measurement
+    % The sensors measure [x;vx;y;vy] and the constant acceleration model's
+    % state is [x;vx;ax;y;vy;ay], so the third and sixth elements of the
+    % state vector are initialized to zero.
+    state = [detection.Measurement(1); detection.Measurement(2); 0; detection.Measurement(3); detection.Measurement(4); 0];
+
+    % Step 5: Initialize the state covariance based on the measurement
+    % noise. The parts of the state that are not directly measured are
+    % assigned a large measurement noise value to account for that.
+    L = 100; % A large number relative to the measurement noise
+    stateCov = blkdiag(detection.MeasurementNoise(1:2,1:2), L, detection.MeasurementNoise(3:4,3:4), L);
+
+    % Step 6: Create the correct filter.
+    % Use 'KF' for trackingKF, 'EKF' for trackingEKF, or 'UKF' for trackingUKF
+    FilterType = 'EKF';
+
+    % Creating the filter:
+    switch FilterType
+        case 'EKF'
+            filter = trackingEKF(STF, MF, state,...
+                'StateCovariance', stateCov, ...
+                'MeasurementNoise', detection.MeasurementNoise(1:4,1:4), ...
+                'StateTransitionJacobianFcn', STFJ, ...
+                'MeasurementJacobianFcn', MJF, ...
+                'ProcessNoise', Q ...
+                );
+        case 'UKF'
+            filter = trackingUKF(STF, MF, state, ...
+                'StateCovariance', stateCov, ...
+                'MeasurementNoise', detection.MeasurementNoise(1:4,1:4), ...
+                'Alpha', 1e-1, ...
+                'ProcessNoise', Q ...
+                );
+        case 'KF' % The ConstantAcceleration model is linear and KF can be used
+            % Define the measurement model: measurement = H * state
+            % In this case:
+            %   measurement = [x;vx;y;vy] = H * [x;vx;ax;y;vy;ay]
+            % So, H = [1 0 0 0 0 0; 0 1 0 0 0 0; 0 0 0 1 0 0; 0 0 0 0 1 0]
+            %
+            % Note that ProcessNoise is automatically calculated by the
+            % ConstantAcceleration motion model
+            H = [1 0 0 0 0 0; 0 1 0 0 0 0; 0 0 0 1 0 0; 0 0 0 0 1 0];
+            filter = trackingKF('MotionModel', '2D Constant Acceleration', ...
+                'MeasurementModel', H, 'State', state, ...
+                'MeasurementNoise', detection.MeasurementNoise(1:4,1:4), ...
+                'StateCovariance', stateCov);
+    end
+ end
+%% FCW Measurement
+% *fcwmeas*
+% The measurement function used in this forward collision warning example
+function measurement = fcwmeas(state, sensorID)
+% The example measurements depend on the sensor type, which is reported by
+% the MeasurementParameters property of the objectDetection. The following
+% two sensorID values are used:
+%   sensorID=1: video objects, the measurement is [x;vx;y]. 
+%   sensorID=2: radar objects, the measurement is [x;vx;y;vy]. 
+% The state is:
+%   Constant velocity       state = [x;vx;y;vy] 
+%   Constant turn           state = [x;vx;y;vy;omega]
+%   Constant acceleration   state = [x;vx;ax;y;vy;ay]
+sensorID = 2;
+    if numel(state) < 6 % Constant turn or constant velocity
+        switch sensorID
+            case 1 % video
+                measurement = [state(1:3); 0];
+            case 2 % radar
+                measurement = state(1:4);
+        end
+    else % Constant acceleration
+        switch sensorID
+            case 1 % video
+                measurement = [state(1:2); state(4); 0];
+            case 2 % radar
+                measurement = [state(1:2); state(4:5)];
+        end
+    end
+end
+%% FCW Measurement Jacobian
+% *fcwmeasjac*
+% The Jacobian of the measurement function used in this forward collision
+% warning example
+function jacobian = fcwmeasjac(state, sensorID)
+% The example measurements depend on the sensor type, which is reported by
+% the MeasurementParameters property of the objectDetection. We choose
+% sensorID=1 for video objects and sensorID=2 for radar objects.  The
+% following two sensorID values are used:
+%   sensorID=1: video objects, the measurement is [x;vx;y]. 
+%   sensorID=2: radar objects, the measurement is [x;vx;y;vy]. 
+% The state is:
+%   Constant velocity       state = [x;vx;y;vy] 
+%   Constant turn           state = [x;vx;y;vy;omega]
+%   Constant acceleration   state = [x;vx;ax;y;vy;ay]
+sensorID = 2;
+    numStates = numel(state);
+    jacobian = zeros(4, numStates, 'like', state);
+
+    if numel(state) < 6 % Constant turn or constant velocity
+        switch sensorID
+            case 1 % video
+                jacobian(1,1) = 1;
+                jacobian(2,2) = 1;
+                jacobian(3,3) = 1;
+            case 2 % radar
+                jacobian(1,1) = 1;
+                jacobian(2,2) = 1;
+                jacobian(3,3) = 1;
+                jacobian(4,4) = 1;
+        end
+    else % Constant acceleration
+        switch sensorID
+            case 1 % video
+                jacobian(1,1) = 1;
+                jacobian(2,2) = 1;
+                jacobian(3,4) = 1;
+            case 2 % radar
+                jacobian(1,1) = 1;
+                jacobian(2,2) = 1;
+                jacobian(3,4) = 1;
+                jacobian(4,5) = 1;
+        end
+    end
+end
+%% Process Radar
+function postProcessedDetections = processRadar(postProcessedDetections, realRadarObjects, t)
+% Process the radar objects into objectDetection objects
+numRadarObjects = numel(realRadarObjects);
+if numRadarObjects
+    classToUse = class(realRadarObjects{1,1}.Measurement);
+    radarMeasCov = cast(diag([2,2,2,100]), classToUse);
+    % Process Radar Objects:
+    for i=1:numRadarObjects
+        object = realRadarObjects(i);
+        postProcessedDetections{i} = objectDetection(t, ...
+            [object{1,1}.Measurement(1); object{1,1}.Measurement(4); object{1,1}.Measurement(2); object{1,1}.Measurement(5)], ...
+            'SensorIndex', 2, 'MeasurementNoise', radarMeasCov, ...
+            'MeasurementParameters', {2}, ...
+            'ObjectAttributes', {-1, 11.4037});
+    end
+end
+end
